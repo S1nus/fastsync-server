@@ -63,13 +63,15 @@ async fn main() {
         populate_init(client.clone(), db.clone()).await;
     }
 
+    let catchup_worker = tokio::spawn(catchup_worker(client.clone(), db.clone()));
     let sync_worker = tokio::spawn(sync_worker(client.clone(), db.clone()));
-    sync_worker.await.unwrap();
+    tokio::try_join!(catchup_worker, sync_worker).expect("could not join workers");
+    //sync_worker.await.unwrap();
 
 
     // 1. Get network head
     // 2. Get highest locally-saved height
-    // 3. Calculate starting height = network head - 80640 (about 2 weeks of blocks)
+    // 3. Calculate starting height = network head - git remote add origin https://github.com/S1nus/fastsync-server.git80640 (about 2 weeks of blocks)
 }
 
 async fn populate_init(client: Arc<Client>, db: Arc<TransactionDB<MultiThreaded>>) {
@@ -140,6 +142,47 @@ async fn sync_worker(client: Arc<Client>, db: Arc<TransactionDB<MultiThreaded>>)
 }
 
 async fn catchup_worker(client: Arc<Client>, db: Arc<TransactionDB<MultiThreaded>>) {
+    let mut network_head = client.header_network_head()
+        .await
+        .expect("could not get latest header")
+        .height().value();
+    let highest_synced = db.get(b"highest_saved_head")
+        .expect("could not get highest_saved_head")
+        .unwrap();
+    let mut buf = [0; 8];
+    buf.copy_from_slice(&highest_synced);
+    let mut highest_synced_height = u64::from_le_bytes(buf);
+    while highest_synced_height < network_head {
+        let next_height = highest_synced_height + 1;
+        println!("syncing {}", next_height);
+        let next_header = client.header_get_by_height(next_height)
+            .await
+            .expect("could not get next header");
+        let stripped_header = strip_header(&next_header);
+        let eds = client.share_get_eds(&next_header)
+            .await
+            .expect("could not get EDS");
+        let txn = db.transaction();
+        txn.delete([b"eds".to_vec(), highest_synced.clone()].concat())
+            .expect("could not cleanup eds");
+        txn.delete([b"stripped_header".to_vec(), highest_synced.clone()].concat())
+            .expect("could not cleanup stripped header");
+        txn.put(get_eds_key(next_height), eds_to_bytes(&eds))
+            .expect("could not put EDS into db");
+        txn.put(get_stripped_header_key(next_height), bincode::serialize(&stripped_header)
+            .expect("could not serialize stripped header")
+        )
+            .expect("could not put stripped header into db");
+        txn.put(b"highest_saved_head", next_height.to_le_bytes())
+            .expect("could not update highest_saved_head");
+        txn.commit()
+            .expect("could not commit transaction");
+        highest_synced_height = next_height;
+        network_head = client.header_network_head()
+            .await
+            .expect("could not get latest header")
+            .height().value();
+    }
 }
 
 fn get_stripped_header_key(height: u64) -> Vec<u8> {
