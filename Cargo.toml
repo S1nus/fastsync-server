@@ -6,8 +6,10 @@ edition = "2021"
 [dependencies]
 dirs = "5.0.1"
 bincode = "1.3.3"
-celestia-rpc = {git="https://github.com/eigerco/lumina.git", rev="8094d04b76e3f3c08667d654c8b6b5bb3fdeab33"}
-celestia-types = {git="https://github.com/eigerco/lumina.git", rev="8094d04b76e3f3c08667d654c8b6b5bb3fdeab33"}
+#celestia-rpc = {path = "../upstream-lumina/rpc"}
+#celestia-types = {path = "../upstream-lumina/types"}
+celestia-rpc = {git="https://github.com/eigerco/lumina.git", rev="c350a6c6a98fb30f04046ee1d2666e2eae68d7dc"}
+celestia-types = {git="https://github.com/eigerco/lumina.git", rev="c350a6c6a98fb30f04046ee1d2666e2eae68d7dc"}
 celestia-tendermint-proto = "0.32.1"
 serde = { version = "1", features = ["derive"] }
 anyhow = "1"

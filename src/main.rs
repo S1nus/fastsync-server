@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::ops::Mul;
 //use tokio::main;
 use std::{
     sync::Arc,
@@ -39,21 +40,32 @@ use nmt_rs::{
 #[tokio::main]
 async fn main() {
 
+    let url = if let Ok(url_var) = std::env::var("LN_URL") {
+        url_var
+    } else {
+        "ws://localhost:26658".to_string()
+    };
+
     let token = std::env::var("CELESTIA_NODE_AUTH_TOKEN").expect("Token not provided");
-    let client = Arc::new(Client::new("ws://localhost:26658", Some(&token))
+    let client = Arc::new(Client::new(&url, Some(&token))
         .await
         .expect("Failed creating rpc client"));
 
-    let home = home_dir().expect("Could not find home directory");
-    let subdir = home.join(".tia_sync_serv");
-    if !subdir.exists() {
-        fs::create_dir(&subdir).expect("Could not create subdirectory");
-        println!("Subdirectory created: {:?}", subdir);
+    let subdir;
+    if let Ok(path_var) = std::env::var("DB_PATH") {
+        subdir = fs::canonicalize(path_var).expect("Could not canonicalize path");
     } else {
-        println!("Subdirectory already exists: {:?}", subdir);
+        let home = home_dir().expect("Could not find home directory");
+        subdir = home.join(".tia_sync_serv");
+        if !subdir.exists() {
+            fs::create_dir(&subdir).expect("Could not create subdirectory");
+            println!("Subdirectory created: {:?}", subdir);
+        } else {
+            println!("Subdirectory already exists: {:?}", subdir);
+        }
     }
 
-    let db_path = subdir.join("db");
+    let db_path = subdir.join("fast_sync_serv_db");
     let db: Arc<TransactionDB::<MultiThreaded>> = Arc::new(TransactionDB::open_default(&db_path).expect("could not open database"));
     let _ = TransactionDB::<MultiThreaded>::destroy(&Options::default(), &db_path);
     let highest_saved_head = db.get(b"highest_saved_head")
@@ -72,6 +84,45 @@ async fn main() {
     // 1. Get network head
     // 2. Get highest locally-saved height
     // 3. Calculate starting height = network head - git remote add origin https://github.com/S1nus/fastsync-server.git80640 (about 2 weeks of blocks)
+}
+
+async fn sync_header(header: &ExtendedHeader, client: Arc<Client>, db: Arc<TransactionDB<MultiThreaded>>) {
+    let highest_saved = get_highest_saved(db.clone());
+    let lowest_saved = get_lowest_saved(db.clone());
+    let stripped_header = strip_header(header);
+    let mut num_retries = 0;
+    let eds: Option<ExtendedDataSquare>;
+    while num_retries < 4 {
+        let eds_result = client.share_get_eds(header).await;
+        match eds_result {
+            Ok(_eds) => {
+                eds = Some(_eds);
+                break;
+            },
+            Err(e) => {
+                num_retries += 1;
+                println!("Error getting EDS: {}", e);
+            }
+        }
+    }
+}
+
+fn get_highest_saved(db: Arc<TransactionDB<MultiThreaded>>) -> u64 {
+    let highest_saved_bytes = db.get(b"highest_saved_head")
+        .expect("could not get highest_saved_head")
+        .unwrap();
+    let mut buf = [0; 8];
+    buf.copy_from_slice(&highest_saved_bytes);
+    u64::from_le_bytes(buf)
+}
+
+fn get_lowest_saved(db: Arc<TransactionDB<MultiThreaded>>) -> u64 {
+    let lowest_saved_bytes = db.get(b"lowest_saved_head")
+        .expect("could not get lowest_saved_head")
+        .unwrap();
+    let mut buf = [0; 8];
+    buf.copy_from_slice(&lowest_saved_bytes);
+    u64::from_le_bytes(buf)
 }
 
 async fn populate_init(client: Arc<Client>, db: Arc<TransactionDB<MultiThreaded>>) {
@@ -183,6 +234,7 @@ async fn catchup_worker(client: Arc<Client>, db: Arc<TransactionDB<MultiThreaded
             .expect("could not get latest header")
             .height().value();
     }
+    println!("catchup done!");
 }
 
 fn get_stripped_header_key(height: u64) -> Vec<u8> {
